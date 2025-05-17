@@ -1,68 +1,81 @@
 import flet as ft
-from database import fetch_table_data
-from components import create_data_table, format_number
+from core.simulation import Simulation
+from ui.components import create_machine_widget, create_control_panel, create_stats_panel
+import threading
+import time
+
+from datetime import datetime
+
 
 def main(page: ft.Page):
-    page.title = "Manufacturing Tables"
-    page.window_width = 1200
+    page.title = "Fließfertigung Simulation"
+    page.window_width = 1400
     page.window_height = 800
     page.theme_mode = ft.ThemeMode.LIGHT
 
-    try:
-        auftrag_df = fetch_table_data("Auftrag")
-        arbeitsplan_df = fetch_table_data("Arbeitsplan")
-        maschine_df = fetch_table_data("Maschine")
-    except Exception as e:
-        page.add(ft.Text(f"Error loading data: {str(e)}", color=ft.colors.RED))
-        return
+    simulation = Simulation()
+    update_lock = threading.Lock()
 
-    auftrag_columns = ["auftrag_nr", "Anzahl", "Start"]
-    arbeitsplan_columns = ["auftrag_nr", "ag_nr", "maschine", "dauer"]
-    maschine_columns = ["Nr", "Bezeichnung", "verf_von", "verf_bis", "Kap_Tag"]
 
-    format_columns = {
-        "Nr": lambda x: format_number(x, digits=3),
-        "maschine": lambda x: format_number(x, digits=3),
-        "ag_nr": lambda x: format_number(x, digits=2)
-    }
+    def handle_sim_control(command):
+        if command == 'start':
+            if not simulation.running:
+                simulation.running = True
+                threading.Thread(target=sim_thread, daemon=True).start()
+        elif command == 'pause':
+            simulation.running = False
+        elif command == 'reset':
+            simulation.__init__()
+            update_ui()
+        elif isinstance(command, tuple) and command[0] == 'speed':
+            simulation.speed = command[1]
+    # Create UI elements
+    time_display = ft.Text("Simulationszeit: ", size=16)
+    machine_panel = ft.Row(scroll=ft.ScrollMode.AUTO)
+    control_panel = create_control_panel(handle_sim_control)
+    stats_panel, update_stats = create_stats_panel(simulation)
 
-    auftrag_table = create_data_table(auftrag_df, auftrag_columns, format_columns)
-    arbeitsplan_table = create_data_table(arbeitsplan_df, arbeitsplan_columns, format_columns)
-    maschine_table = create_data_table(maschine_df, maschine_columns, format_columns)
+    def update_ui():
+        with update_lock:
+            state = simulation.get_state()
+            time_display.value = f"Simulationszeit: {state['sim_time'].strftime('%Y-%m-%d %H:%M')}"
 
-    tabs = ft.Tabs(
-        selected_index=0,
-        animation_duration=300,
-        tabs=[
-            ft.Tab(
-                text="Auftrag",
-                content=ft.Container(
-                    ft.Column([auftrag_table], scroll=ft.ScrollMode.AUTO),
-                    expand=True,
-                    padding=10
-                )
-            ),
-            ft.Tab(
-                text="Arbeitsplan",
-                content=ft.Container(
-                    ft.Column([arbeitsplan_table], scroll=ft.ScrollMode.AUTO),
-                    expand=True,
-                    padding=10
-                )
-            ),
-            ft.Tab(
-                text="Maschine",
-                content=ft.Container(
-                    ft.Column([maschine_table], scroll=ft.ScrollMode.AUTO),
-                    expand=True,
-                    padding=10
-                )
-            ),
-        ],
-        expand=True
+            # Update machines
+            machine_panel.controls = [
+                create_machine_widget(m)
+                for m in state['maschinen']
+            ]
+
+            # Update stats
+            update_stats()
+
+            page.update()
+
+    def sim_thread():
+        simulation.start()
+
+
+
+    # Setup layout
+    page.add(
+        ft.Column([
+            time_display,
+            control_panel,
+            ft.Divider(),
+            machine_panel,
+            ft.Divider(),
+            stats_panel
+        ])
     )
 
-    page.add(tabs)
-    page.update()
+    # Start UI update loop
+    def ui_update_loop():
+        while True:
+            update_ui()
+            time.sleep(0.5)
 
-ft.app(target=main)
+    threading.Thread(target=ui_update_loop, daemon=True).start()
+
+
+if __name__ == "__main__":
+    ft.app(target=main)
