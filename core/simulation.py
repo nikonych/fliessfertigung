@@ -8,7 +8,8 @@ import time
 
 
 class Simulation:
-    def __init__(self, db_path='manufacturing.db'):
+    def __init__(self, db_path):
+        print(f"[SIMULATION] Использую базу: {db_path}")
         self.sim_time = pd.Timestamp('2020-01-01')
         self.db_conn = sqlite3.connect(db_path)
         self.events = PriorityQueue()

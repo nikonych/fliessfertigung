@@ -1,74 +1,114 @@
+import sqlite3
+import tempfile
+
 import flet as ft
+from flet.core.file_picker import FilePickerResultEvent
+from flet.core.snack_bar import SnackBar
+from flet.core.text import Text
+
 from core.simulation import Simulation
+from data.transfer_to_sqlite import create_database_and_tables, insert_data
 from ui.cards_view import create_card_tab
-from ui.components import create_machine_widget, create_control_panel, create_stats_panel
 import threading
 import time
 
 import os
+import sys
+import shutil
 
-db_path = os.path.join("data", "manufacturing.db")
+
+def resource_path(relative_path):
+    """ PyInstaller compatibility (flet pack аналогично работает) """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+
+def get_user_db_path():
+    return os.path.join(tempfile.gettempdir(), "manufacturing.db")
+
+
+def ensure_db_exists():
+    db_dst = get_user_db_path()
+    if not os.path.exists(db_dst):
+        # Попытаться скопировать образец
+        db_src = resource_path(os.path.join(tempfile.gettempdir(), "manufacturing.db"))
+        if os.path.exists(db_src):
+            shutil.copy(db_src, db_dst)
+        else:
+            create_empty_database(db_dst)  # Если образца нет — создаём пустую БД
+    return db_dst
+
+
+from data.db_utils import create_empty_database, import_excel_to_db
+
+db_path = ensure_db_exists()  # Твоя функция, определяющая путь к базе
+create_empty_database(db_path)  # <-- Гарантирует наличие таблиц
+
+
 
 
 def build_ui(page: ft.Page):
-    simulation = Simulation()
+    print(f"Используется база: {db_path}")
+    simulation = Simulation(db_path)
     update_lock = threading.Lock()
 
-    def handle_sim_control(command):
-        if command == 'start':
-            if not simulation.running:
-                simulation.running = True
-                threading.Thread(target=sim_thread, daemon=True).start()
-        elif command == 'pause':
-            simulation.running = False
-        elif command == 'reset':
-            simulation.__init__()
-            update_ui()
-        elif isinstance(command, tuple) and command[0] == 'speed':
-            simulation.speed = command[1]
-
     time_display = ft.Text("Simulationszeit: ", size=16)
-    machine_panel = ft.Row(scroll=ft.ScrollMode.AUTO)
-    control_panel = create_control_panel(handle_sim_control)
-    stats_panel, update_stats = create_stats_panel(simulation)
+    excel_picker = ft.FilePicker()
 
-    def update_ui():
-        with update_lock:
-            state = simulation.get_state()
-            time_display.value = f"Simulationszeit: {state['sim_time'].strftime('%Y-%m-%d %H:%M')}"
-            machine_panel.controls = [create_machine_widget(m) for m in state['maschinen']]
-            update_stats()
-            page.update()
+    def on_excel_picked(e: FilePickerResultEvent):
+        if not e.files:
+            return
+        file_path = e.files[0].path
+        import_excel_to_db(file_path, db_path, page)
+        page.controls.clear()
+        build_ui(page)
+        page.update()
 
-    def sim_thread():
-        simulation.start()
+    excel_picker.on_result = on_excel_picked
 
-    sim_layout = ft.Column([
-        time_display,
-        control_panel,
-        ft.Divider(),
-        machine_panel,
-        ft.Divider(),
-        stats_panel
-    ])
+    import_button = ft.ElevatedButton(
+        "Excel importieren",
+        icon=ft.Icons.UPLOAD_FILE,
+        on_click=lambda _: excel_picker.pick_files(
+            dialog_title="Excel-Datei wählen",
+            allowed_extensions=["xlsx"],
+            allow_multiple=False
+        )
+    )
+
+    sim_layout = ft.Column([time_display])
 
     tabs = ft.Tabs(
         selected_index=0,
         tabs=[
-            ft.Tab(text="Simulation", content=sim_layout),
             ft.Tab(text="Maschine", content=create_card_tab(db_path, "Maschine")),
             ft.Tab(text="Auftrag", content=create_card_tab(db_path, "Auftrag")),
-            ft.Tab(text="Arbeitsplan", content=create_card_tab(db_path, "Arbeitsplan"))
+            ft.Tab(text="Arbeitsplan", content=create_card_tab(db_path, "Arbeitsplan")),
+            ft.Tab(text="Simulation", content=ft.Column([time_display])),
         ],
-        expand=True
+        expand=True  # <— чтобы занять всё доступное пространство по высоте
     )
 
-    page.add(tabs)  # ✅ только один раз добавляем всё
+
+    # --- Вот ключевой кусок: оборачиваем tabs и кнопку в один Row ---
+    main_layout = ft.Column([
+        ft.Row(
+            [
+                tabs,  # сам Tabs уже «expand=True»
+            ],
+            expand=True,  # <-- Row растягивается и по ширине, и по высоте
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        ),
+    ])
+
+    page.add(main_layout)
 
     def ui_update_loop():
         while True:
-            update_ui()
             time.sleep(0.5)
 
     threading.Thread(target=ui_update_loop, daemon=True).start()
+
 

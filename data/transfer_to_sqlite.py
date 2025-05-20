@@ -200,7 +200,7 @@ def insert_data(conn, excel_file):
 
 
 def main():
-    excel_file = "21_Simulation_Fliessfertigung (2).xlsx"
+    excel_file = "../21_Simulation_Fliessfertigung (2).xlsx"
     db_name = "manufacturing.db"
 
     conn = create_database_and_tables(db_name)
